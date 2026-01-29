@@ -24,7 +24,7 @@ jobs:
             wget gnupg ca-certificates \
             xvfb \
             fonts-liberation \
-            libnss3 libxss1 libasound2 \
+            libnss3 libxss1 libasound2t64 \
             libgtk-3-0 libgbm1 \
             libu2f-udev \
             xdg-utils
