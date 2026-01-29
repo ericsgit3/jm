@@ -1,4 +1,4 @@
-name: Run jm.py manually (Selenium + Chrome)
+name: Run jm.py manually (Selenium + Chrome pinned)
 
 on:
   workflow_dispatch: {}
@@ -17,28 +17,63 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Chrome & system dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            wget gnupg ca-certificates \
-            xvfb \
+            unzip curl xvfb \
             fonts-liberation \
             libnss3 libxss1 libasound2t64 \
             libgtk-3-0 libgbm1 \
             libu2f-udev \
             xdg-utils
 
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
-            | sudo gpg --dearmor -o /usr/share/keyrings/google-linux-keyring.gpg
+      # 安装“同版本”的 Chrome + Chromedriver（Chrome for Testing）
+      - name: Install Chrome for Testing (matching chromedriver)
+        run: |
+          set -e
 
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
-            | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          # 读取 latest stable 的下载链接（包含 chrome + chromedriver，版本必匹配）
+          JSON="$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json)"
 
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends google-chrome-stable
+          CHROME_URL="$(python - <<'PY'
+import json,sys
+j=json.loads(sys.stdin.read())
+for x in j["channels"]["Stable"]["downloads"]["chrome"]:
+  if x["platform"]=="linux64":
+    print(x["url"]); break
+PY
+<<< "$JSON")"
 
-          google-chrome --version
+          DRIVER_URL="$(python - <<'PY'
+import json,sys
+j=json.loads(sys.stdin.read())
+for x in j["channels"]["Stable"]["downloads"]["chromedriver"]:
+  if x["platform"]=="linux64":
+    print(x["url"]); break
+PY
+<<< "$JSON")"
+
+          mkdir -p /opt/cft
+          cd /opt/cft
+
+          echo "Downloading Chrome: $CHROME_URL"
+          curl -L "$CHROME_URL" -o chrome.zip
+          unzip -q chrome.zip
+          rm chrome.zip
+
+          echo "Downloading Chromedriver: $DRIVER_URL"
+          curl -L "$DRIVER_URL" -o chromedriver.zip
+          unzip -q chromedriver.zip
+          rm chromedriver.zip
+
+          # 把 chrome 和 chromedriver 加到 PATH（注意解压后的目录结构）
+          echo "/opt/cft/chrome-linux64" >> $GITHUB_PATH
+          echo "/opt/cft/chromedriver-linux64" >> $GITHUB_PATH
+
+          # 输出版本确认
+          /opt/cft/chrome-linux64/chrome --version
+          /opt/cft/chromedriver-linux64/chromedriver --version
 
       - name: Install Python dependencies
         run: |
@@ -46,5 +81,8 @@ jobs:
           pip install selenium undetected-chromedriver requests
 
       - name: Run jm.py (with Xvfb)
+        env:
+          # 让很多代码默认用 PATH 里的 chromedriver / chrome
+          CHROME_BIN: /opt/cft/chrome-linux64/chrome
         run: |
           xvfb-run -a python jm.py
