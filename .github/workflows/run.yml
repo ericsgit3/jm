@@ -1,4 +1,4 @@
-name: Run jm.py manually (Selenium + Chrome pinned)
+name: Run jm.py manually (Selenium + UC + Chrome pinned)
 
 on:
   workflow_dispatch: {}
@@ -21,59 +21,68 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            unzip curl xvfb \
+            curl unzip xvfb \
             fonts-liberation \
             libnss3 libxss1 libasound2t64 \
             libgtk-3-0 libgbm1 \
             libu2f-udev \
             xdg-utils
 
-      # 安装“同版本”的 Chrome + Chromedriver（Chrome for Testing）
-      - name: Install Chrome for Testing (matching chromedriver)
+      # 关键：安装“匹配的一对” Chrome + Chromedriver，然后强制作为系统默认
+      - name: Install Chrome for Testing (Stable) + matching chromedriver
         run: |
-          set -e
+          set -euo pipefail
 
-          # 读取 latest stable 的下载链接（包含 chrome + chromedriver，版本必匹配）
-          JSON="$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json)"
+          python - <<'PY'
+import json, os, urllib.request, zipfile, shutil, stat
 
-          CHROME_URL="$(python - <<'PY'
-import json,sys
-j=json.loads(sys.stdin.read())
-for x in j["channels"]["Stable"]["downloads"]["chrome"]:
-  if x["platform"]=="linux64":
-    print(x["url"]); break
+url = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
+data = json.loads(urllib.request.urlopen(url).read().decode("utf-8"))
+
+stable = data["channels"]["Stable"]
+version = stable["version"]
+
+def pick(downloads, platform):
+    for item in downloads:
+        if item["platform"] == platform:
+            return item["url"]
+    raise RuntimeError("No download found for platform " + platform)
+
+chrome_url = pick(stable["downloads"]["chrome"], "linux64")
+driver_url = pick(stable["downloads"]["chromedriver"], "linux64")
+
+os.makedirs("/opt/cft", exist_ok=True)
+
+def dl_and_unzip(u, outzip):
+    urllib.request.urlretrieve(u, outzip)
+    with zipfile.ZipFile(outzip, "r") as z:
+        z.extractall("/opt/cft")
+    os.remove(outzip)
+
+dl_and_unzip(chrome_url, "/opt/cft/chrome.zip")
+dl_and_unzip(driver_url, "/opt/cft/driver.zip")
+
+chrome_bin = "/opt/cft/chrome-linux64/chrome"
+driver_bin = "/opt/cft/chromedriver-linux64/chromedriver"
+
+# 确保可执行
+for p in [chrome_bin, driver_bin]:
+    st = os.stat(p)
+    os.chmod(p, st.st_mode | stat.S_IEXEC)
+
+print("Installed CFT version:", version)
+print("Chrome bin:", chrome_bin)
+print("Driver bin:", driver_bin)
 PY
-<<< "$JSON")"
 
-          DRIVER_URL="$(python - <<'PY'
-import json,sys
-j=json.loads(sys.stdin.read())
-for x in j["channels"]["Stable"]["downloads"]["chromedriver"]:
-  if x["platform"]=="linux64":
-    print(x["url"]); break
-PY
-<<< "$JSON")"
+          # 强制让系统默认使用我们安装的这一对（不靠 PATH 猜）
+          sudo ln -sf /opt/cft/chrome-linux64/chrome /usr/local/bin/google-chrome
+          sudo ln -sf /opt/cft/chrome-linux64/chrome /usr/local/bin/chrome
+          sudo ln -sf /opt/cft/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
 
-          mkdir -p /opt/cft
-          cd /opt/cft
-
-          echo "Downloading Chrome: $CHROME_URL"
-          curl -L "$CHROME_URL" -o chrome.zip
-          unzip -q chrome.zip
-          rm chrome.zip
-
-          echo "Downloading Chromedriver: $DRIVER_URL"
-          curl -L "$DRIVER_URL" -o chromedriver.zip
-          unzip -q chromedriver.zip
-          rm chromedriver.zip
-
-          # 把 chrome 和 chromedriver 加到 PATH（注意解压后的目录结构）
-          echo "/opt/cft/chrome-linux64" >> $GITHUB_PATH
-          echo "/opt/cft/chromedriver-linux64" >> $GITHUB_PATH
-
-          # 输出版本确认
-          /opt/cft/chrome-linux64/chrome --version
-          /opt/cft/chromedriver-linux64/chromedriver --version
+          # 打印版本确认：这两行必须主版本一致
+          google-chrome --version
+          chromedriver --version
 
       - name: Install Python dependencies
         run: |
@@ -81,8 +90,5 @@ PY
           pip install selenium undetected-chromedriver requests
 
       - name: Run jm.py (with Xvfb)
-        env:
-          # 让很多代码默认用 PATH 里的 chromedriver / chrome
-          CHROME_BIN: /opt/cft/chrome-linux64/chrome
         run: |
           xvfb-run -a python jm.py
